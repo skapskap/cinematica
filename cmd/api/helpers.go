@@ -8,6 +8,7 @@ import (
 	"io"
 	"net/http"
 	"strconv"
+	"strings"
 )
 
 type envelope map[string]interface{}
@@ -45,7 +46,13 @@ func (app *application) writeJSON(w http.ResponseWriter, status int, data envelo
 
 func (app *application) readJSON(w http.ResponseWriter, r *http.Request, dst interface{}) error {
 
-	err := json.NewDecoder(r.Body).Decode(dst)
+	maxBytes := 1_048_576
+	r.Body = http.MaxBytesReader(w, r.Body, int64(maxBytes))
+
+	dec := json.NewDecoder(r.Body)
+	dec.DisallowUnknownFields()
+
+	err := dec.Decode(dst)
 	if err != nil {
 
 		var syntaxError *json.SyntaxError
@@ -71,12 +78,26 @@ func (app *application) readJSON(w http.ResponseWriter, r *http.Request, dst int
 		case errors.Is(err, io.EOF):
 			return errors.New("O corpo não pode ficar vazio")
 
+		case strings.HasPrefix(err.Error(), "json: unknown field "):
+			fieldName := strings.TrimPrefix(err.Error(), "json: unknown field ")
+			return fmt.Errorf("O corpo contém uma chave desconhecida %s", fieldName)
+
+		case err.Error() == "http: request body too large":
+			return fmt.Errorf("O corpo não pode ter tamanho maior que %d bytes", maxBytes)
+
 		case errors.As(err, &invalidUnmarshalError):
 			panic(err)
 
 		default:
 			return err
 		}
+
 	}
+
+	err = dec.Decode(&struct{}{})
+	if err != io.EOF {
+		return errors.New("O corpo só pode conter um valor JSON")
+	}
+
 	return nil
 }
